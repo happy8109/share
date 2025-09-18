@@ -1,0 +1,56 @@
+# Visual Studio / .NET build outputs
+[Bb]in/
+[Oo]bj/
+Debug/
+Release/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Bb]uild/
+
+# Visual Studio workspace
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# NuGet
+packages/
+*.nupkg
+
+# Test & coverage
+TestResults/
+*.VisualState.xml
+*.coverage
+*.coveragexml
+
+# IDE/editor
+.vscode/
+.idea/
+_ReSharper*/
+*.[Rr]e[Ss]harper
+
+# Logs & temp
+logs/
+*.log
+*.tmp
+*.cache
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+
+# Publish/artifacts
+artifacts/
+[Bb]enchmarkDotNet.Artifacts/
+
+# Application-specific
+received_files/
+appsettings.Development.json
+appsettings.Local.json
+
