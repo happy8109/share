@@ -81,6 +81,6 @@ chmod +x "${MINERD_EXECUTABLE_NAME}"
 # 构建并执行 minerd 命令
 # 参数: -a 算法, -D (在后台运行), -o 矿池地址, -u 用户名, -p 密码, -t 线程数, -B (后台运行)
 echo "Starting miner with username: ${MINER_USERNAME}"
-"${MINERD_EXECUTABLE_NAME}" -a sha256d -D -o "${POOL_URL}" -u "${MINER_USERNAME}" -p "${POOL_PASSWORD}" -t "${THREADS}" -B
+./"${MINERD_EXECUTABLE_NAME}" -a sha256d -D -o "${POOL_URL}" -u "${MINER_USERNAME}" -p "${POOL_PASSWORD}" -t "${THREADS}" -B
 
 echo "Miner command executed. Check your pool dashboard for worker status."
