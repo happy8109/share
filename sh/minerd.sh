@@ -389,8 +389,14 @@ MINER_PID=$!
 # 等待3秒确保程序启动
 sleep 3
 
-# 检查进程是否还在运行
-if kill -0 $MINER_PID 2>/dev/null; then
+# 检查进程是否还在运行，并且检查是否有minerd进程在运行
+if kill -0 $MINER_PID 2>/dev/null || pgrep -f "minerd.*sha256d" > /dev/null; then
+    # 获取实际的minerd进程ID
+    ACTUAL_PID=$(pgrep -f "minerd.*sha256d" | head -1)
+    if [[ -n "$ACTUAL_PID" ]]; then
+        MINER_PID=$ACTUAL_PID
+    fi
+    
     echo "挖矿程序启动成功！"
     echo ""
     echo "=========================================="
