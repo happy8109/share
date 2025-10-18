@@ -224,6 +224,39 @@ fi
 # 检查现有挖矿进程（仅在直接运行时检查）
 check_existing_miner
 
+# 测试网络连接
+test_network_connection() {
+    echo "正在测试网络连接..."
+    
+    # 测试矿池服务器连接
+    if ping -c 1 -W 3 public-pool.io > /dev/null 2>&1; then
+        echo "✓ 矿池服务器连接正常"
+    else
+        echo "✗ 无法连接到矿池服务器 public-pool.io"
+        echo "请检查网络连接或DNS设置"
+        return 1
+    fi
+    
+    # 测试矿池端口
+    if timeout 5 bash -c "</dev/tcp/public-pool.io/21496" 2>/dev/null; then
+        echo "✓ 矿池端口 21496 连接正常"
+    else
+        echo "✗ 无法连接到矿池端口 21496"
+        echo "请检查防火墙设置或矿池状态"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 执行网络连接测试
+if ! test_network_connection; then
+    echo ""
+    echo "网络连接测试失败，但将继续尝试启动挖矿程序..."
+    echo "如果启动失败，请检查网络配置"
+    echo ""
+fi
+
 # 尝试自动查找活动网卡
 interface=$(ip route | grep default | awk '{print $5}')
 
@@ -341,14 +374,20 @@ echo "=========================================="
 
 echo "正在启动挖矿程序..."
 
-# 在后台启动挖矿程序
-nohup ./"${MINERD_EXECUTABLE_NAME}" -a sha256d -D -o "${POOL_URL}" -u "${MINER_USERNAME}" -p "${POOL_PASSWORD}" -t "${THREADS}" -B > /dev/null 2>&1 &
+# 创建临时日志文件路径
+TEMP_LOG="/tmp/minerd_$$.log"
+
+# 清理旧的临时日志文件（超过1小时的）
+find /tmp -name "minerd_*.log" -mmin +60 -delete 2>/dev/null || true
+
+# 在后台启动挖矿程序，输出到临时文件
+nohup ./"${MINERD_EXECUTABLE_NAME}" -a sha256d -D -o "${POOL_URL}" -u "${MINER_USERNAME}" -p "${POOL_PASSWORD}" -t "${THREADS}" -B > "${TEMP_LOG}" 2>&1 &
 
 # 获取进程ID
 MINER_PID=$!
 
-# 等待一秒确保程序启动
-sleep 1
+# 等待3秒确保程序启动
+sleep 3
 
 # 检查进程是否还在运行
 if kill -0 $MINER_PID 2>/dev/null; then
@@ -365,7 +404,8 @@ if kill -0 $MINER_PID 2>/dev/null; then
     echo "  查看进程: ps aux | grep minerd"
     echo "  停止挖矿: kill $MINER_PID"
     echo "  停止所有: killall minerd"
-    echo "  查看日志: tail -f nohup.out"
+    echo "  查看输出: tail -f ${TEMP_LOG}"
+    echo "  查看最新输出: tail -20 ${TEMP_LOG}"
     echo ""
     echo "如需安装为系统服务（开机自启动），请运行:"
     echo "  sudo bash $0 --install-service"
@@ -376,6 +416,21 @@ if kill -0 $MINER_PID 2>/dev/null; then
 else
     echo "错误: 挖矿程序启动失败"
     echo "请检查网络连接和矿池配置"
-    echo "查看错误日志: cat nohup.out"
+    echo ""
+    echo "故障排除步骤:"
+    echo "1. 检查网络连接: ping public-pool.io"
+    echo "2. 检查矿池端口: telnet public-pool.io 21496"
+    echo "3. 检查程序权限: ls -la ${MINERD_EXECUTABLE_NAME}"
+    echo "4. 手动测试: ./${MINERD_EXECUTABLE_NAME} --help"
+    echo "5. 检查系统资源: free -h && df -h"
+    echo ""
+    if [[ -f "${TEMP_LOG}" ]]; then
+        echo "错误日志内容:"
+        echo "----------------------------------------"
+        cat "${TEMP_LOG}"
+        echo "----------------------------------------"
+        # 清理临时日志文件
+        rm -f "${TEMP_LOG}"
+    fi
     exit 1
 fi

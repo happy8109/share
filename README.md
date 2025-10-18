@@ -116,17 +116,27 @@ ps aux | grep minerd
 # 停止所有挖矿进程
 killall minerd
 
-# 查看挖矿日志（如果使用nohup启动）
-tail -f nohup.out
-
 # 停止特定进程（使用进程ID）
 kill <PID>
+
+# 查看挖矿实时输出
+tail -f /tmp/minerd_*.log
+
+# 查看最新输出（最后20行）
+tail -20 /tmp/minerd_*.log
+
+# 查看所有临时日志文件
+ls -la /tmp/minerd_*.log
 ```
 
 ### 检查网络连接
 ```bash
 # 测试矿池连接
+ping public-pool.io
 telnet public-pool.io 21496
+
+# 或者使用更简单的测试
+timeout 5 bash -c "</dev/tcp/public-pool.io/21496" && echo "连接成功" || echo "连接失败"
 ```
 
 ### 查看系统服务状态
@@ -136,6 +146,42 @@ systemctl status minerd-service
 
 # 查看详细日志
 journalctl -u minerd-service --no-pager
+```
+
+### 常见问题解决
+
+#### 挖矿程序启动失败
+```bash
+# 1. 检查网络连接
+ping public-pool.io
+telnet public-pool.io 21496
+
+# 2. 检查程序权限
+ls -la minerd
+chmod +x minerd
+
+# 3. 手动测试程序
+./minerd --help
+
+# 4. 检查系统资源
+free -h
+df -h
+
+# 5. 检查进程状态
+ps aux | grep minerd
+```
+
+#### 进程管理问题
+```bash
+# 查看所有挖矿相关进程
+ps aux | grep minerd
+
+# 强制停止所有挖矿进程
+pkill -f "minerd.*sha256d"
+killall minerd
+
+# 检查进程是否完全停止
+pgrep -f "minerd.*sha256d"
 ```
 
 ## 智能进程管理
