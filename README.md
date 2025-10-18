@@ -19,6 +19,8 @@ sudo bash <(curl -s https://raw.githubusercontent.com/happy8109/share/refs/heads
 ### ✅ 已解决的问题
 1. **避免重复下载**: 脚本会检查当前目录是否已存在 `minerd` 程序，如果存在且可执行则跳过下载
 2. **开机自启动**: 支持安装为 systemd 系统服务，实现开机自动启动挖矿
+3. **后台运行**: 脚本默认在后台运行，启动后自动退出，挖矿程序继续运行
+4. **防止重复启动**: 自动检测现有挖矿进程，避免重复启动多个挖矿程序
 
 ### 🆕 新增功能
 - 命令行参数支持
@@ -44,6 +46,9 @@ sudo bash minerd.sh --stop-service
 
 # 移除系统服务
 sudo bash minerd.sh --remove-service
+
+# 强制重启挖矿进程（停止现有进程）
+bash minerd.sh --force-restart
 ```
 
 ### 系统服务管理
@@ -110,6 +115,12 @@ ps aux | grep minerd
 
 # 停止所有挖矿进程
 killall minerd
+
+# 查看挖矿日志（如果使用nohup启动）
+tail -f nohup.out
+
+# 停止特定进程（使用进程ID）
+kill <PID>
 ```
 
 ### 检查网络连接
@@ -127,6 +138,30 @@ systemctl status minerd-service
 journalctl -u minerd-service --no-pager
 ```
 
+## 智能进程管理
+
+### 重复启动检测
+脚本会自动检测系统中是否已有挖矿进程在运行：
+
+- **自动检测**: 使用 `pgrep` 检测现有的 `minerd` 进程
+- **智能处理**: 
+  - 非交互环境（如curl直接执行）：自动停止现有进程并启动新的
+  - 交互环境：提供选择菜单让用户决定
+  - 强制重启模式：直接停止现有进程
+
+### 进程管理命令
+```bash
+# 查看所有挖矿进程
+ps aux | grep minerd
+
+# 停止所有挖矿进程
+pkill -f "minerd.*sha256d"
+killall minerd
+
+# 停止特定进程
+kill <PID>
+```
+
 ## 注意事项
 
 1. **权限要求**: 安装/移除系统服务需要 root 权限
@@ -134,6 +169,7 @@ journalctl -u minerd-service --no-pager
 3. **资源消耗**: 挖矿会消耗 CPU 资源和电力
 4. **合规性**: 请确保挖矿活动符合当地法律法规
 5. **收益**: 单线程挖矿的收益可能很低，主要用于测试和学习
+6. **进程管理**: 脚本会自动防止重复启动，确保系统只运行一个挖矿进程
 
 ## 支持的架构
 

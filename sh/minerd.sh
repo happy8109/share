@@ -10,6 +10,7 @@ THREADS="1" # 默认挖矿线程数
 INSTALL_SERVICE=false
 STOP_SERVICE=false
 REMOVE_SERVICE=false
+FORCE_RESTART=false
 MINERD_EXECUTABLE_NAME="minerd"
 SERVICE_NAME="minerd-service"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -21,12 +22,14 @@ show_help() {
     echo "  --install-service    安装为系统服务（开机自启动）"
     echo "  --stop-service       停止挖矿服务"
     echo "  --remove-service     移除系统服务"
+    echo "  --force-restart      强制重启挖矿进程（停止现有进程）"
     echo "  --help              显示此帮助信息"
     echo ""
     echo "示例:"
     echo "  $0                  直接运行挖矿"
     echo "  $0 --install-service 安装为系统服务"
     echo "  $0 --stop-service    停止服务"
+    echo "  $0 --force-restart   强制重启挖矿"
 }
 
 # 解析命令行参数
@@ -42,6 +45,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --remove-service)
             REMOVE_SERVICE=true
+            shift
+            ;;
+        --force-restart)
+            FORCE_RESTART=true
             shift
             ;;
         --help)
@@ -137,6 +144,67 @@ EOF
     echo "  查看日志: journalctl -u $SERVICE_NAME -f"
 }
 
+# 检查是否已有挖矿进程在运行
+check_existing_miner() {
+    # 检查是否有minerd进程在运行
+    if pgrep -f "minerd.*sha256d" > /dev/null; then
+        echo "检测到已有挖矿进程在运行："
+        ps aux | grep -E "minerd.*sha256d" | grep -v grep
+        echo ""
+        
+        # 如果是强制重启模式，直接停止现有进程
+        if [[ "$FORCE_RESTART" == true ]]; then
+            echo "强制重启模式：正在停止现有挖矿进程..."
+            pkill -f "minerd.*sha256d"
+            sleep 2
+            echo "现有进程已停止"
+            return 0
+        fi
+        
+        # 检查是否在非交互环境中（如通过curl直接执行）
+        if [[ ! -t 0 ]] || [[ -n "$CI" ]] || [[ -n "$AUTOMATED" ]]; then
+            echo "检测到非交互环境，自动停止现有进程并启动新的..."
+            pkill -f "minerd.*sha256d"
+            sleep 2
+            echo "现有进程已停止"
+            return 0
+        fi
+        
+        # 交互模式
+        echo "请选择操作："
+        echo "1) 停止现有进程并启动新的"
+        echo "2) 退出脚本"
+        echo "3) 查看现有进程状态"
+        read -p "请输入选择 (1-3): " choice
+        
+        case $choice in
+            1)
+                echo "正在停止现有挖矿进程..."
+                pkill -f "minerd.*sha256d"
+                sleep 2
+                echo "现有进程已停止"
+                ;;
+            2)
+                echo "脚本退出"
+                exit 0
+                ;;
+            3)
+                echo "现有挖矿进程状态："
+                ps aux | grep -E "minerd.*sha256d" | grep -v grep
+                echo ""
+                echo "如需停止进程，请运行："
+                echo "  pkill -f 'minerd.*sha256d'"
+                echo "  killall minerd"
+                exit 0
+                ;;
+            *)
+                echo "无效选择，脚本退出"
+                exit 1
+                ;;
+        esac
+    fi
+}
+
 # 处理服务相关操作
 if [[ "$STOP_SERVICE" == true ]]; then
     stop_mining_service
@@ -152,6 +220,9 @@ if [[ "$INSTALL_SERVICE" == true ]]; then
     install_as_service
     exit 0
 fi
+
+# 检查现有挖矿进程（仅在直接运行时检查）
+check_existing_miner
 
 # 尝试自动查找活动网卡
 interface=$(ip route | grep default | awk '{print $5}')
@@ -269,19 +340,42 @@ echo "  挖矿算法: SHA256D"
 echo "=========================================="
 
 echo "正在启动挖矿程序..."
-if ./"${MINERD_EXECUTABLE_NAME}" -a sha256d -D -o "${POOL_URL}" -u "${MINER_USERNAME}" -p "${POOL_PASSWORD}" -t "${THREADS}" -B; then
+
+# 在后台启动挖矿程序
+nohup ./"${MINERD_EXECUTABLE_NAME}" -a sha256d -D -o "${POOL_URL}" -u "${MINER_USERNAME}" -p "${POOL_PASSWORD}" -t "${THREADS}" -B > /dev/null 2>&1 &
+
+# 获取进程ID
+MINER_PID=$!
+
+# 等待一秒确保程序启动
+sleep 1
+
+# 检查进程是否还在运行
+if kill -0 $MINER_PID 2>/dev/null; then
     echo "挖矿程序启动成功！"
     echo ""
-    echo "提示:"
-    echo "  - 挖矿程序已在后台运行"
-    echo "  - 请访问矿池网站查看挖矿状态"
-    echo "  - 使用 'ps aux | grep minerd' 查看进程"
-    echo "  - 使用 'killall minerd' 停止挖矿"
+    echo "=========================================="
+    echo "挖矿程序信息:"
+    echo "  进程ID: $MINER_PID"
+    echo "  矿工名称: ${MINER_USERNAME}"
+    echo "  运行状态: 后台运行中"
+    echo "=========================================="
+    echo ""
+    echo "管理命令:"
+    echo "  查看进程: ps aux | grep minerd"
+    echo "  停止挖矿: kill $MINER_PID"
+    echo "  停止所有: killall minerd"
+    echo "  查看日志: tail -f nohup.out"
     echo ""
     echo "如需安装为系统服务（开机自启动），请运行:"
     echo "  sudo bash $0 --install-service"
+    echo ""
+    echo "脚本将在3秒后退出，挖矿程序继续在后台运行..."
+    sleep 3
+    exit 0
 else
     echo "错误: 挖矿程序启动失败"
     echo "请检查网络连接和矿池配置"
+    echo "查看错误日志: cat nohup.out"
     exit 1
 fi
