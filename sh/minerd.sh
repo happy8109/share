@@ -15,6 +15,7 @@ INSTALL_SERVICE=false
 STOP_SERVICE=false
 REMOVE_SERVICE=false
 FORCE_RESTART=false
+START_NOW=false
 MINERD_EXECUTABLE_NAME="minerd"
 SERVICE_NAME="minerd-service"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -55,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             FORCE_RESTART=true
             shift
             ;;
+        --start-now)
+            START_NOW=true
+            shift
+            ;;
         --help)
             show_help
             exit 0
@@ -74,6 +79,162 @@ check_root() {
         exit 1
     fi
 }
+# 打印网络和标识信息
+print_net_and_identifier() {
+    local interface ip_address identifier
+    interface=$(ip route | grep default | awk '{print $5}')
+    echo "默认路由网卡: ${interface:-<未检测到>}"
+    if [ -n "$interface" ]; then
+        ip_address=$(ip addr show "$interface" | awk '/inet / {print $2}' | cut -d'/' -f1 | head -n1)
+        echo "该网卡IP: ${ip_address:-<未检测到>}"
+        if [ -n "$ip_address" ]; then
+            identifier=$(echo "$ip_address" | awk -F. '{print $4}')
+            echo "标识(末段): ${identifier:-<未检测到>}"
+        fi
+    fi
+}
+
+# 显示挖矿进程状态（非服务层面）
+show_miner_process_status() {
+    if pgrep -f "minerd.*sha256d" >/dev/null 2>&1; then
+        echo "挖矿进程已运行："
+        ps aux | grep -E "minerd.*sha256d" | grep -v grep
+    else
+        echo "挖矿进程未运行"
+    fi
+}
+
+# 停止挖矿进程（不影响服务配置）
+stop_miner_process() {
+    if pgrep -f "minerd.*sha256d" >/dev/null 2>&1; then
+        echo "正在停止挖矿进程..."
+        pkill -f "minerd.*sha256d" || true
+        sleep 1
+        if pgrep -f "minerd.*sha256d" >/dev/null 2>&1; then
+            echo "进程仍在，尝试强制结束..."
+            killall -9 minerd 2>/dev/null || true
+        fi
+        echo "挖矿进程已停止（如启用了自启服务，systemd 可能会自动重启）"
+    else
+        echo "未发现挖矿进程"
+    fi
+}
+
+# 一键清场：停止进程、移除服务、清理文件
+cleanup_all() {
+    echo "[清场] 开始执行..."
+
+    # 1) 停止自启服务（若存在）
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl list-unit-files | grep -q "^${SERVICE_NAME}\.service"; then
+            echo "[清场] 停止并禁用 systemd 服务 ${SERVICE_NAME}..."
+            systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+            systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+        fi
+        if [[ -f "$SERVICE_FILE" ]]; then
+            echo "[清场] 删除服务文件 $SERVICE_FILE..."
+            rm -f "$SERVICE_FILE"
+            systemctl daemon-reload
+        fi
+    fi
+
+    if [[ -x "/etc/init.d/${MINERD_EXECUTABLE_NAME}" ]] || [[ -f "/etc/init.d/${MINERD_EXECUTABLE_NAME}" ]]; then
+        echo "[清场] 停止并禁用 OpenWrt/procd 服务 /etc/init.d/${MINERD_EXECUTABLE_NAME}..."
+        /etc/init.d/${MINERD_EXECUTABLE_NAME} stop 2>/dev/null || true
+        /etc/init.d/${MINERD_EXECUTABLE_NAME} disable 2>/dev/null || true
+        rm -f "/etc/init.d/${MINERD_EXECUTABLE_NAME}" || true
+    fi
+
+    # 2) 停止挖矿进程
+    stop_miner_process
+
+    # 3) 清理临时日志
+    echo "[清场] 清理临时日志 /tmp/minerd_*.log..."
+    rm -f /tmp/minerd_*.log 2>/dev/null || true
+
+    # 4) 删除脚本目录下的 minerd 二进制（保留脚本）
+    if [[ -f "$SCRIPT_DIR/$MINERD_EXECUTABLE_NAME" ]]; then
+        echo "[清场] 删除 $SCRIPT_DIR/$MINERD_EXECUTABLE_NAME..."
+        rm -f "$SCRIPT_DIR/$MINERD_EXECUTABLE_NAME" || true
+    fi
+
+    echo "[清场] 完成。"
+}
+
+# 菜单
+show_menu() {
+    while true; do
+        echo "=========================================="
+        echo "Minerd 管理菜单"
+        echo "=========================================="
+        echo "1) 立即启动挖矿（进程）"
+        echo "2) 安装为开机自启（服务）"
+        echo "3) 停止自启服务（service stop）"
+        echo "4) 移除自启服务（service remove）"
+        echo "5) 查看自启服务状态"
+        echo "6) 查看自启服务日志(实时)"
+        echo "7) 查看挖矿进程状态"
+        echo "8) 停止挖矿进程"
+        echo "9) 显示网络/标识信息"
+        echo "10) 一键清场（停止进程+移除服务+清理文件）"
+        echo "0) 退出"
+        read -p "请输入选项: " choice
+        case "$choice" in
+            1)
+                echo "启动挖矿..."
+                bash "$SCRIPT_PATH" --start-now
+                ;;
+            2)
+                echo "安装为开机自启..."
+                install_as_service || true
+                ;;
+            3)
+                echo "停止自启服务..."
+                stop_mining_service || true
+                ;;
+            4)
+                echo "移除自启服务..."
+                remove_mining_service || true
+                ;;
+            5)
+                if command -v systemctl >/dev/null 2>&1; then
+                    systemctl status "$SERVICE_NAME" --no-pager || true
+                else
+                    echo "当前系统不支持 systemd。"
+                fi
+                ;;
+            6)
+                if command -v journalctl >/dev/null 2>&1; then
+                    echo "按 Ctrl+C 退出日志查看"
+                    journalctl -u "$SERVICE_NAME" -f
+                else
+                    echo "journalctl 不可用"
+                fi
+                ;;
+            7)
+                show_miner_process_status
+                ;;
+            8)
+                stop_miner_process
+                ;;
+            9)
+                print_net_and_identifier
+                ;;
+            10)
+                cleanup_all
+                ;;
+            0)
+                echo "已退出"
+                exit 0
+                ;;
+            *)
+                echo "无效选项"
+                ;;
+        esac
+        echo ""
+    done
+}
+
 
 # 停止挖矿服务
 stop_mining_service() {
@@ -203,45 +364,6 @@ start_service() {
     procd_set_param env LANG=C
     procd_close_instance
 }
-
-# 检查服务是否已安装
-is_service_installed() {
-    if command -v systemctl >/dev/null 2>&1; then
-        if systemctl status "$SERVICE_NAME" >/dev/null 2>&1 || [[ -f "$SERVICE_FILE" ]]; then
-            return 0
-        fi
-    fi
-
-    if [[ -x "/etc/init.d/minerd" ]]; then
-        return 0
-    fi
-
-    return 1
-}
-
-# 默认确保开机自启（若可能）
-ensure_autostart() {
-    if is_service_installed; then
-        return 0
-    fi
-
-    echo "未检测到已安装的自启动服务，尝试自动安装..."
-    if [[ $EUID -eq 0 ]]; then
-        install_as_service || true
-        return 0
-    fi
-
-    if command -v sudo >/dev/null 2>&1; then
-        echo "提示：可执行以下命令自动安装为开机自启："
-        echo "  sudo bash $0 --install-service"
-    else
-        echo "提示：请以 root 权限运行本脚本以安装为开机自启。"
-    fi
-}
-
-stop_service() {
-    :
-}
 EOF
 
         # 替换占位符
@@ -338,6 +460,12 @@ fi
 
 if [[ "$INSTALL_SERVICE" == true ]]; then
     install_as_service
+    exit 0
+fi
+
+# 交互式菜单：仅在手动运行且无参数时显示
+if [[ $# -eq 0 ]] && [[ -t 0 ]] && [[ "$START_NOW" == false ]]; then
+    show_menu
     exit 0
 fi
 
