@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# 脚本与目录
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]:-$0}")"
+
 # 定义矿池钱包地址变量
 WALLET_ADDRESS="15e9KepQopbir46nHDu94NHW66w7JGdLe4"
 POOL_URL="stratum+tcp://public-pool.io:21496"
@@ -107,23 +111,46 @@ remove_mining_service() {
 install_as_service() {
     check_root
     
-    # 检查minerd程序是否存在
-    if [[ ! -f "./$MINERD_EXECUTABLE_NAME" ]]; then
-        echo "错误: 未找到minerd程序，请先运行脚本下载程序"
-        exit 1
+    # 如果未下载 minerd，则先下载（到脚本目录）
+    if [[ ! -f "$SCRIPT_DIR/$MINERD_EXECUTABLE_NAME" ]]; then
+        echo "未找到 $MINERD_EXECUTABLE_NAME，正在下载..."
+        if [[ $(uname -m) == "x86_64" ]]; then
+            wget "https://github.com/happy8109/share/raw/refs/heads/main/files/linux/minerd" -O "$SCRIPT_DIR/$MINERD_EXECUTABLE_NAME" || { echo "下载失败"; exit 1; }
+        else
+            wget "https://github.com/happy8109/share/raw/refs/heads/main/files/linux/minerd-arm64" -O "$SCRIPT_DIR/$MINERD_EXECUTABLE_NAME" || { echo "下载失败"; exit 1; }
+        fi
+        chmod +x "$SCRIPT_DIR/$MINERD_EXECUTABLE_NAME"
     fi
-    
-    # 创建服务文件
-    cat > "$SERVICE_FILE" << EOF
+
+    # systemd 可用则安装 systemd 服务，否则尝试安装 OpenWrt/procd 服务
+    if command -v systemctl >/dev/null 2>&1; then
+        local workdir="$SCRIPT_DIR"
+
+        # 预计算 worker 标识（安装时计算，避免在 ExecStart 中使用命令替换）
+        local iface ip identifier
+        iface=$(ip route | awk '/default/ {print $5; exit}') || true
+        if [ -n "${iface:-}" ]; then
+            ip=$(ip addr show "$iface" | awk '/inet / {print $2}' | cut -d'/' -f1 | head -n1) || true
+            if [ -n "${ip:-}" ]; then
+                identifier=$(echo "$ip" | awk -F. '{print $4}') || true
+            fi
+        fi
+        if [ -z "${identifier:-}" ]; then
+            identifier=$(cat /dev/urandom | tr -dc A-Za-z0-9 | head -c4)
+        fi
+        local worker="$WALLET_ADDRESS.$identifier"
+
+        cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Miner Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$(pwd)
-ExecStart=$(pwd)/$MINERD_EXECUTABLE_NAME -a sha256d -D -o $POOL_URL -u $WALLET_ADDRESS.\$(ip route | grep default | awk '{print \$5}' | xargs -I {} ip addr show {} | grep "inet " | awk '{print \$2}' | cut -d'/' -f1 | awk -F. '{print \$4}') -p $POOL_PASSWORD -t $THREADS -B
+WorkingDirectory=${workdir}
+ExecStart=${workdir}/$MINERD_EXECUTABLE_NAME -a sha256d -o $POOL_URL -u ${worker} -p $POOL_PASSWORD -t $THREADS
 Restart=always
 RestartSec=10
 
@@ -131,17 +158,110 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-    # 重新加载systemd并启用服务
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME"
-    systemctl start "$SERVICE_NAME"
-    
-    echo "挖矿服务已安装并启动"
-    echo "使用以下命令管理服务:"
-    echo "  查看状态: systemctl status $SERVICE_NAME"
-    echo "  停止服务: systemctl stop $SERVICE_NAME"
-    echo "  启动服务: systemctl start $SERVICE_NAME"
-    echo "  查看日志: journalctl -u $SERVICE_NAME -f"
+        systemctl daemon-reload
+        systemctl enable "$SERVICE_NAME"
+        systemctl restart "$SERVICE_NAME"
+        echo "已安装为 systemd 服务并已启动：$SERVICE_NAME"
+        echo "管理：systemctl status|start|stop|restart $SERVICE_NAME"
+        return 0
+    fi
+
+    # 尝试安装 OpenWrt/procd 服务
+    if [[ -x "/etc/init.d/" ]] || [[ -d "/etc/init.d" ]]; then
+        local init_name="minerd"
+        local init_file="/etc/init.d/${init_name}"
+        local workdir="$SCRIPT_DIR"
+        cat > "$init_file" << 'EOF'
+#!/bin/sh /etc/rc.common
+START=95
+USE_PROCD=1
+
+NAME=minerd
+PROG="minerd"
+
+start_service() {
+    local workdir="WORKDIR_PLACEHOLDER"
+    local pool_url="POOL_URL_PLACEHOLDER"
+    local wallet="WALLET_PLACEHOLDER"
+    local pass="POOL_PASSWORD_PLACEHOLDER"
+    local threads="THREADS_PLACEHOLDER"
+
+    local iface
+    iface=$(ip route | awk '/default/ {print $5; exit}')
+    local ident
+    if [ -n "$iface" ]; then
+        ident=$(ip addr show "$iface" | awk '/inet / {print $2}' | cut -d/ -f1 | awk -F. '{print $4}')
+    fi
+    [ -z "$ident" ] && ident=$(cat /dev/urandom | tr -dc A-Za-z0-9 | head -c4)
+
+    procd_open_instance
+    procd_set_param command "$workdir/$PROG" -a sha256d -D -o "$pool_url" -u "$wallet.$ident" -p "$pass" -t "$threads" -B
+    procd_set_param respawn 60 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param limits core="unlimited"
+    procd_set_param env LANG=C
+    procd_close_instance
+}
+
+# 检查服务是否已安装
+is_service_installed() {
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl status "$SERVICE_NAME" >/dev/null 2>&1 || [[ -f "$SERVICE_FILE" ]]; then
+            return 0
+        fi
+    fi
+
+    if [[ -x "/etc/init.d/minerd" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# 默认确保开机自启（若可能）
+ensure_autostart() {
+    if is_service_installed; then
+        return 0
+    fi
+
+    echo "未检测到已安装的自启动服务，尝试自动安装..."
+    if [[ $EUID -eq 0 ]]; then
+        install_as_service || true
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1; then
+        echo "提示：可执行以下命令自动安装为开机自启："
+        echo "  sudo bash $0 --install-service"
+    else
+        echo "提示：请以 root 权限运行本脚本以安装为开机自启。"
+    fi
+}
+
+stop_service() {
+    :
+}
+EOF
+
+        # 替换占位符
+        sed -i "s|WORKDIR_PLACEHOLDER|${workdir}|g" "$init_file"
+        sed -i "s|POOL_URL_PLACEHOLDER|${POOL_URL}|g" "$init_file"
+        sed -i "s|WALLET_PLACEHOLDER|${WALLET_ADDRESS}|g" "$init_file"
+        sed -i "s|POOL_PASSWORD_PLACEHOLDER|${POOL_PASSWORD}|g" "$init_file"
+        sed -i "s|THREADS_PLACEHOLDER|${THREADS}|g" "$init_file"
+
+        chmod +x "$init_file"
+        /etc/init.d/${init_name} enable
+        /etc/init.d/${init_name} restart
+        echo "已安装为 OpenWrt/procd 服务并已启动：/etc/init.d/${init_name}"
+        echo "管理：/etc/init.d/${init_name} start|stop|restart|status"
+        return 0
+    fi
+
+    echo "未检测到 systemd 或 OpenWrt/procd 环境，请使用 rc.local 自启："
+    echo "(sleep 30; /bin/bash $SCRIPT_PATH) &"
+    return 1
 }
 
 # 检查是否已有挖矿进程在运行
@@ -219,6 +339,23 @@ fi
 if [[ "$INSTALL_SERVICE" == true ]]; then
     install_as_service
     exit 0
+fi
+
+# 默认自动安装自启动（非参数模式、且具备权限时）
+if [[ $EUID -eq 0 ]]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        if ! systemctl status "$SERVICE_NAME" >/dev/null 2>&1 && [[ ! -f "$SERVICE_FILE" ]]; then
+            echo "未检测到已安装的自启动服务，正在自动安装..."
+            install_as_service || true
+        fi
+    elif [[ -x "/etc/init.d/" ]] || [[ -d "/etc/init.d" ]]; then
+        if [[ ! -f "/etc/init.d/minerd" ]]; then
+            echo "未检测到已安装的自启动服务（OpenWrt/procd），正在自动安装..."
+            install_as_service || true
+        fi
+    fi
+else
+    echo "提示：如需自动安装开机自启，请以 root 权限运行本脚本，或执行：sudo bash $0 --install-service"
 fi
 
 # 检查现有挖矿进程（仅在直接运行时检查）
